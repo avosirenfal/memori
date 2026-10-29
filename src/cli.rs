@@ -4,8 +4,8 @@
 use clap::{Arg, ArgAction, ArgMatches, Args, ColorChoice, Command, FromArgMatches, Parser};
 
 use crate::analysis::{Grouping, Limit, Settings};
-use crate::render::View;
 use crate::render::table::Show;
+use crate::render::{Format, View};
 use crate::sections::SectionKind;
 
 /// Explains where your RAM is going
@@ -43,6 +43,10 @@ pub struct Cli {
     #[command(flatten)]
     show: ShowFlags,
 
+    /// Print the chosen sections as JSON, one key per section (sizes in bytes)
+    #[arg(long)]
+    json: bool,
+
     /// When to use colors
     #[arg(long, value_enum, default_value_t)]
     color: ColorChoice,
@@ -67,7 +71,8 @@ impl Cli {
             ([], false) => SectionKind::SUMMARY.to_vec(),
             (chosen, _) => chosen.to_vec(),
         };
-        View { sections, breakdown: self.detailed, show: self.show.0 }
+        let format = if self.json { Format::Json } else { Format::Text };
+        View { sections, breakdown: self.detailed, show: self.show.0, format }
     }
 
     pub fn color(&self) -> anstream::ColorChoice {

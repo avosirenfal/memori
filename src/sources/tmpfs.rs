@@ -7,7 +7,7 @@ use super::unescape_octal;
 use crate::collections::sorted_by_key;
 use crate::units::Bytes;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TmpfsMount {
     pub path: String,
     pub used: Bytes,

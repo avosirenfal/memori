@@ -82,6 +82,7 @@ Options:
   -h, --headers        Print titles, column headers and totals (the default)
   -H, --no-headers     Leave out titles, column headers and totals
   -n, --no-help        Leave out explanations and warnings
+      --json           Print the chosen sections as JSON, one key per section (sizes in bytes)
       --color <COLOR>  When to use colors [default: auto] [possible values: auto, always, never]
       --help           Print help
   -V, --version        Print version
@@ -92,6 +93,19 @@ Run with sudo to include other users' processes and kernel slab caches.
 
 For example, `memori -apH` prints every program and nothing else, one per line.
 Warnings (such as "run with sudo") appear only when both headers and help are on.
+
+### JSON
+
+`--json` prints the same report as a JSON object with one key per chosen section, named
+after the section's flag (`overview`, `programs`, `zfs`, …), in report order. All sizes
+are numbers of bytes. The other flags apply as they do to the text report: `--top`,
+`--all`, `--slabs` and `-P` shape the lists, `-d` adds the overview's categories, and
+`-H` leaves out the `host` key. A section that doesn't apply to the system is `null`;
+one that couldn't be read is `{"error": "..."}`.
+
+```bash
+memori --json -p --top 5 | jq '.programs.rows[] | {name, pss: .mem.pss}'
+```
 
 ## Installing
 

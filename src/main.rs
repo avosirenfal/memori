@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
 
     let snapshot = snapshot::Snapshot::collect()?;
     let report = analysis::analyze(&snapshot, &cli.settings());
-    let text = render::render(&report, &cli.view());
+    let text = render::render(&report, &cli.view())?;
     match anstream::stdout().lock().write_all(text.as_bytes()) {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         result => Ok(result?),

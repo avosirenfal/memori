@@ -27,7 +27,8 @@ fn parse_line(line: &str) -> Option<Zone> {
     (!free_blocks.is_empty()).then_some(Zone { free_blocks })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BlockSize {
     Small,
     Medium,

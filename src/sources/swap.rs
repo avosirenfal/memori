@@ -9,7 +9,7 @@ use crate::units::Bytes;
 
 pub const SWAPS: &str = "/proc/swaps";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SwapDevice {
     pub path: String,
     pub kind: SwapKind,
@@ -17,7 +17,8 @@ pub struct SwapDevice {
     pub used: Bytes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SwapKind {
     /// A compressed RAM disk: swapped pages still occupy RAM, compressed.
     Zram,
@@ -62,7 +63,7 @@ pub fn parse_swaps(text: &str) -> anyhow::Result<Vec<SwapDevice>> {
         .collect()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Zram {
     pub name: String,
     /// Data stored in the device, before compression.

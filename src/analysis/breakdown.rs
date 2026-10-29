@@ -9,7 +9,8 @@ use crate::sources::zfs::ArcStats;
 use crate::units::Bytes;
 
 /// How hard it is to get memory back from a category.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Reclaim {
     /// Only freed by closing programs (or by pushing it out to swap).
     InUse,
@@ -24,7 +25,8 @@ impl Reclaim {
     pub const ALL: [Self; 4] = [Self::InUse, Self::Shrinkable, Self::Cache, Self::Free];
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Category {
     Programs,
     SharedMemory,
@@ -60,7 +62,7 @@ impl Category {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Slice {
     pub category: Category,
     pub bytes: Bytes,

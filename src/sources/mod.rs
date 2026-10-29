@@ -71,6 +71,23 @@ impl<T> Source<T> {
     }
 }
 
+/// In JSON: the value itself, `null` when the system doesn't have it, or
+/// `{"error": "..."}` when it couldn't be read.
+impl<T: serde::Serialize> serde::Serialize for Source<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(serde::Serialize)]
+        struct Error<'a> {
+            error: &'a str,
+        }
+        match self {
+            Self::Available(value) => value.serialize(serializer),
+            Self::Absent => serializer.serialize_none(),
+            Self::NeedsRoot => Error { error: "needs root" }.serialize(serializer),
+            Self::Broken(reason) => Error { error: reason }.serialize(serializer),
+        }
+    }
+}
+
 /// Parses lines like `MemTotal:  16477352 kB` or `HugePages_Total:  0`, the format of
 /// /proc/meminfo and /proc/<pid>/smaps_rollup. Values with a `kB` suffix become bytes;
 /// bare values (counts) are kept as they are.
@@ -112,7 +129,7 @@ macro_rules! byte_fields {
         }
     ) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ::serde::Serialize)]
         $vis struct $name {
             $( $(#[$field_meta])* pub $field: $crate::units::Bytes, )*
         }

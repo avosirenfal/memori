@@ -19,7 +19,8 @@ pub struct SlabCache {
 }
 
 /// Whether the kernel counts a cache as reclaimable (SReclaimable) or not (SUnreclaim).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Reclaimability {
     Reclaimable,
     Unreclaimable,
@@ -35,6 +36,22 @@ impl SlabCache {
     /// Slab memory that holds no live object: free slots in partly filled slabs, plus padding.
     pub fn wasted(&self) -> Bytes {
         self.footprint.saturating_sub(self.in_use())
+    }
+}
+
+/// In JSON, alongside its own fields, a cache reports how much of it is used and wasted.
+impl serde::Serialize for SlabCache {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut cache = serializer.serialize_struct("SlabCache", 7)?;
+        cache.serialize_field("name", &self.name)?;
+        cache.serialize_field("active_objects", &self.active_objects)?;
+        cache.serialize_field("object_size", &self.object_size)?;
+        cache.serialize_field("footprint", &self.footprint)?;
+        cache.serialize_field("in_use", &self.in_use())?;
+        cache.serialize_field("wasted", &self.wasted())?;
+        cache.serialize_field("reclaimability", &self.reclaimability)?;
+        cache.end()
     }
 }
 

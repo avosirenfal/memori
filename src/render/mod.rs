@@ -3,6 +3,7 @@
 //! uniformly.
 
 mod describe;
+mod json;
 mod style;
 pub mod table;
 
@@ -34,9 +35,23 @@ pub struct View {
     /// Break the overview's groups down into categories.
     pub breakdown: bool,
     pub show: Show,
+    pub format: Format,
 }
 
-pub fn render(report: &Report, view: &View) -> String {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Text,
+    Json,
+}
+
+pub fn render(report: &Report, view: &View) -> serde_json::Result<String> {
+    match view.format {
+        Format::Text => Ok(text(report, view)),
+        Format::Json => json::json(report, view),
+    }
+}
+
+fn text(report: &Report, view: &View) -> String {
     let title = view.show.headers.then(|| title(report));
     let sections = view
         .sections

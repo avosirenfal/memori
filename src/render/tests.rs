@@ -100,14 +100,19 @@ const SHOW_ALL: Show = Show { headers: true, help: true };
 
 fn rendered(settings: &Settings, view: &View) -> String {
     let snapshot = zfs_workstation();
-    let text = strip_ansi(&render(&analyze(&snapshot, settings), view));
+    let text = strip_ansi(&render(&analyze(&snapshot, settings), view).unwrap());
     println!("{text}");
     text
 }
 
 #[test]
 fn summary_shows_sums_and_programs_only() {
-    let view = View { sections: SectionKind::SUMMARY.to_vec(), breakdown: false, show: SHOW_ALL };
+    let view = View {
+        sections: SectionKind::SUMMARY.to_vec(),
+        breakdown: false,
+        show: SHOW_ALL,
+        format: Format::Text,
+    };
     let text = rendered(&SETTINGS, &view);
     assert!(text.contains("Total available"));
     assert!(text.contains("31.4 GiB")); // 11.4 GiB MemAvailable + 20.0 GiB ARC shrink
@@ -121,7 +126,12 @@ fn summary_shows_sums_and_programs_only() {
 
 #[test]
 fn detailed_report_covers_every_source() {
-    let view = View { sections: SectionKind::ALL.to_vec(), breakdown: true, show: SHOW_ALL };
+    let view = View {
+        sections: SectionKind::ALL.to_vec(),
+        breakdown: true,
+        show: SHOW_ALL,
+        format: Format::Text,
+    };
     let text = rendered(&SETTINGS, &view);
     for kind in SectionKind::ALL {
         assert!(text.contains(kind.spec().title), "missing {}", kind.spec().title);
@@ -139,6 +149,7 @@ fn bare_program_list_has_no_headers_or_help() {
         sections: vec![SectionKind::Programs],
         breakdown: false,
         show: Show { headers: false, help: false },
+        format: Format::Text,
     };
     let text = rendered(&settings, &view);
     assert_eq!(text.lines().count(), 3);
@@ -167,7 +178,12 @@ fn cells_add_up_to_width() {
 #[test]
 fn readme_sample_is_current() {
     let show = Show { headers: true, help: false };
-    let view = View { sections: SectionKind::SUMMARY.to_vec(), breakdown: false, show };
+    let view = View {
+        sections: SectionKind::SUMMARY.to_vec(),
+        breakdown: false,
+        show,
+        format: Format::Text,
+    };
     let text = rendered(&SETTINGS, &view);
     // The README leaves out the title line, which names the test machine.
     let sample = text.split_once("\n\n").map_or(text.as_str(), |(_, rest)| rest).trim_end();
@@ -175,4 +191,64 @@ fn readme_sample_is_current() {
         include_str!("../../README.md").contains(sample),
         "README.md's sample is out of date; replace it with:\n\n{sample}"
     );
+}
+
+fn json(settings: &Settings, view: &View) -> serde_json::Value {
+    let snapshot = zfs_workstation();
+    let text = render(&analyze(&snapshot, settings), view).unwrap();
+    println!("{text}");
+    serde_json::from_str(&text).unwrap()
+}
+
+fn json_view(sections: &[SectionKind], breakdown: bool, headers: bool) -> View {
+    View {
+        sections: sections.to_vec(),
+        breakdown,
+        show: Show { headers, help: true },
+        format: Format::Json,
+    }
+}
+
+#[test]
+fn json_has_one_key_per_chosen_section_in_order() {
+    let value = json(&SETTINGS, &json_view(&SectionKind::ALL, true, true));
+    let keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+    let expected: Vec<&str> =
+        std::iter::once("host").chain(SectionKind::ALL.map(|kind| kind.spec().flag)).collect();
+    assert_eq!(keys, expected);
+    assert_eq!(value["zfs"]["sizes"]["size"], 22 * GIB);
+    assert_eq!(value["swap"]["devices"][0]["kind"], "zram");
+    assert_eq!(value["fragmentation"]["verdict"], "fragmented");
+    assert_eq!(value["fragmentation"]["free"]["large"], 0);
+    assert_eq!(value["kernel"]["slabs"]["largest"][2]["reclaimability"], "reclaimable");
+    assert_eq!(value["overview"]["total_available"], 12_000_000 * 1024 + 20 * GIB);
+    assert_eq!(value["overview"]["groups"][1]["categories"][0]["category"], "zfs_arc");
+}
+
+#[test]
+fn json_respects_settings() {
+    let settings = Settings { grouping: Grouping::PerProcess, ..SETTINGS };
+    let value = json(&settings, &json_view(&[SectionKind::Programs], false, false));
+    let object = value.as_object().unwrap();
+    assert_eq!(object.keys().collect::<Vec<_>>(), ["programs"]);
+    let rows = value["programs"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["kind"], "process");
+    assert_eq!(rows[0]["command"], "/usr/bin/firefox --flag");
+    assert_eq!(value["programs"]["hidden"]["rows"], 2);
+
+    let grouped = json(&SETTINGS, &json_view(&[SectionKind::Programs], false, true));
+    assert_eq!(grouped["programs"]["rows"][0]["kind"], "program");
+    assert_eq!(grouped["programs"]["rows"][0]["processes"], 2);
+    assert_eq!(grouped["programs"]["rows"][0]["pid"], 100);
+}
+
+#[test]
+fn json_overview_breaks_down_only_when_detailed() {
+    let summary = json(&SETTINGS, &json_view(&[SectionKind::Overview], false, true));
+    assert!(summary["overview"]["groups"][0].get("categories").is_none());
+    assert!(summary["overview"].get("classic_used").is_none());
+    let detailed = json(&SETTINGS, &json_view(&[SectionKind::Overview], true, true));
+    assert!(detailed["overview"]["groups"][0]["categories"].is_array());
+    assert!(detailed["overview"]["classic_used"].is_number());
 }

@@ -87,6 +87,7 @@ pub fn analyze<'a>(snapshot: &'a Snapshot, settings: &Settings) -> Report<'a> {
 
 // ─── Host ────────────────────────────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize)]
 pub struct Host<'a> {
     pub hostname: Option<&'a str>,
     pub kernel: Option<&'a str>,
@@ -132,6 +133,8 @@ impl Group {
 
 /// MemAvailable starts from free memory and droppable cache, then subtracts the reserves
 /// the kernel keeps for itself (and occasionally adds memory it can reclaim elsewhere).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Adjustment {
     HeldBack(Bytes),
     Extra(Bytes),
@@ -175,6 +178,7 @@ fn overview(snapshot: &Snapshot, breakdown: &Breakdown) -> Overview {
 
 // ─── Programs ────────────────────────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize)]
 pub struct Programs<'a> {
     /// Largest first.
     pub rows: Vec<ProgramRow<'a>>,
@@ -185,16 +189,19 @@ pub struct Programs<'a> {
     pub unreadable: usize,
 }
 
+#[derive(serde::Serialize)]
 pub struct ProgramRow<'a> {
     /// The process itself, or a program's root process.
     pub pid: u32,
     pub name: &'a str,
+    #[serde(flatten)]
     pub stands_for: StandsFor<'a>,
     pub mem: Rollup,
 }
 
 /// What a row of the programs table describes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StandsFor<'a> {
     /// One process, and its command line if it has one.
     Process { command: Option<&'a str> },
@@ -214,13 +221,29 @@ impl Members {
     fn count(processes: usize) -> Self {
         if processes > 1 { Self::Many(processes) } else { Self::One }
     }
+
+    pub fn processes(self) -> usize {
+        match self {
+            Self::One => 1,
+            Self::Many(count) => count,
+        }
+    }
 }
 
+/// In JSON, the number of processes.
+impl serde::Serialize for Members {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(self.processes() as u64)
+    }
+}
+
+#[derive(serde::Serialize)]
 pub struct Hidden {
     pub rows: usize,
     pub mem: Rollup,
 }
 
+#[derive(serde::Serialize)]
 pub struct Total {
     pub processes: usize,
     pub mem: Rollup,
@@ -260,6 +283,7 @@ fn programs<'a>(scan: &'a ProcessScan, settings: &Settings) -> Programs<'a> {
 
 // ─── Kernel ──────────────────────────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize)]
 pub struct Kernel<'a> {
     pub slab_unreclaimable: Bytes,
     pub slab_reclaimable: Bytes,
@@ -271,6 +295,7 @@ pub struct Kernel<'a> {
     pub slabs: Source<Slabs<'a>>,
 }
 
+#[derive(serde::Serialize)]
 pub struct Slabs<'a> {
     /// Largest first.
     pub largest: Vec<&'a SlabCache>,
@@ -312,6 +337,7 @@ fn slabs(caches: &[SlabCache], limit: Limit) -> Slabs<'_> {
 
 // ─── File cache and shared memory ────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize)]
 pub struct Cache<'a> {
     pub file: Bytes,
     pub active: Bytes,
@@ -343,6 +369,7 @@ fn cache<'a>(snapshot: &'a Snapshot, breakdown: &Breakdown) -> Cache<'a> {
 
 // ─── Swap ────────────────────────────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize)]
 pub struct Swap<'a> {
     pub used: Bytes,
     pub total: Bytes,
@@ -367,8 +394,10 @@ fn swap(snapshot: &Snapshot) -> Option<Swap<'_>> {
 
 // ─── Fragmentation ───────────────────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize)]
 pub struct Fragmentation {
     /// Free memory by the size of the contiguous block it sits in, largest blocks first.
+    #[serde(serialize_with = "as_map")]
     pub free: [(BlockSize, Bytes); 3],
     pub verdict: Verdict,
 }
@@ -379,7 +408,8 @@ impl Fragmentation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Verdict {
     /// At least half of free memory is in large blocks.
     Healthy,
@@ -387,6 +417,14 @@ pub enum Verdict {
     Fragmenting,
     /// Less than a fifth: huge pages need the kernel to compact memory first.
     Fragmented,
+}
+
+/// Key/value pairs as a JSON object.
+fn as_map<S: serde::Serializer, K: serde::Serialize, V: serde::Serialize>(
+    pairs: &[(K, V)],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_map(pairs.iter().map(|(key, value)| (key, value)))
 }
 
 fn fragmentation(snapshot: &Snapshot) -> Source<Fragmentation> {
@@ -411,6 +449,7 @@ fn fragmentation(snapshot: &Snapshot) -> Source<Fragmentation> {
 
 // ─── Unexplained ─────────────────────────────────────────────────────────────────────────
 
+#[derive(serde::Serialize)]
 pub struct Unexplained {
     pub amount: Bytes,
     /// vmalloc'd memory not counted as kernel stacks: a possible hiding place.

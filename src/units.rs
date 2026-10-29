@@ -4,7 +4,9 @@ use std::fmt;
 use std::iter::Sum;
 use std::ops::Add;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// In JSON, a plain number of bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(transparent)]
 pub struct Bytes(pub u64);
 
 impl Bytes {
