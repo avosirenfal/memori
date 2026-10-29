@@ -9,37 +9,35 @@ memori reads all of those sources at once and adds them up so that every byte of
 lands in exactly one category. Each category also says how easily its memory comes back.
 
 ```
-━━ WHERE YOUR RAM IS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━ WHERE YOUR RAM IS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   ███████████████████████████████████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒░░░░
 
-  █ In use · freed only by quitting programs    30.5 GiB   49%
-      ■ Programs' own data (heap, stacks)       19.1 GiB   31%
-      ■ Shared memory & tmpfs                    1.9 GiB    3%
-      ■ Kernel objects (unreclaimable slab)      3.8 GiB    6%
-      ■ Page tables                              293 MiB   <1%
-      ■ Kernel stacks & per-CPU data              59 MiB   <1%
-      ■ Compressed swap in RAM (zram/zswap)      512 MiB   <1%
-      ■ Unexplained (no counter covers it)       4.8 GiB    8%
-  ▓ Shrinkable · given back when RAM runs low   20.0 GiB   32%
-      ■ ZFS ARC (ZFS's own disk cache)          20.0 GiB   32%
-  ▒ Cache · dropped instantly when needed        8.2 GiB   13%
-      ■ File cache (copies of files on disk)     6.8 GiB   11%
-      ■ Kernel caches (reclaimable slab)         1.4 GiB    2%
-  ░ Free · not used for anything                 3.8 GiB    6%
+  █ In use                                      30.5 GiB   49%  freed only by quitting programs
+  ▓ ZFS ARC                                     20.0 GiB   32%  given back when RAM runs low
+  ▒ Cache                                        8.2 GiB   13%  dropped instantly when needed
+  ░ Free                                         3.8 GiB    6%
 
-  Available for new programs                    11.4 GiB  free + droppable cache (MemAvailable)
-    + if the ZFS ARC shrinks to its minimum     20.0 GiB
-  "used" as classic `free` reports it           48.6 GiB  total − free − buff/cache
+  Available                                     11.4 GiB  free + droppable cache (MemAvailable)
+  ZFS ARC can shrink by                         20.0 GiB  down to its minimum size
+  Total available                               31.4 GiB
+
+━━ PROGRAMS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Program                                    Unique     Fair share      Swap
+                                      freed if quit   incl. shared
+  firefox                    2 procs        7.2 GiB        9.0 GiB   461 MiB
+  java                       pid 200        4.0 GiB        5.0 GiB   256 MiB
+  …1 more                                   819 MiB        1.0 GiB    51 MiB
+  ──────────────────────────────────────────────────────────────────────────
+  All 4 processes                          12.0 GiB       15.0 GiB   768 MiB
 ```
 
 (This sample comes from the synthetic test system in `src/report.rs`.)
 
-After the overview, the report continues with these sections:
+That is the default summary. With `--detailed`, every total in the overview is broken
+down into its categories, and these sections follow:
 
-- **Programs**: memory per program, grouped by executable, the way `smem` reports it.
-  *Unique* (USS) is roughly what you get back by quitting the program. *Fair share* (PSS)
-  also includes an even split of the memory it shares with other processes.
 - **ZFS ARC**: its size, target, minimum and maximum, what it holds, how much it could
   give back, and the hit rate.
 - **Kernel**: slab, page tables, stacks, per-CPU data and vmalloc, followed by the
@@ -49,12 +47,15 @@ After the overview, the report continues with these sections:
 - **File cache & shared memory**: active and inactive cache, dirty pages, and the tmpfs
   mounts that make up shared memory. `free` counts shared memory as cache even though
   it can't be dropped.
-- **Swap**: swap devices, zram compression ratios, and the programs with the most
-  memory swapped out.
+- **Swap**: swap devices and zram compression ratios.
 - **Free memory fragmentation**: how much free RAM is in large contiguous blocks,
   from `/proc/buddyinfo`.
-- **Unexplained memory**: if a lot of RAM isn't covered by any counter, a list of the
-  usual suspects.
+- **Unexplained memory**: if a lot of RAM isn't covered by any counter, the measurable
+  suspects.
+
+In the programs table, *Unique* (USS) is roughly what you get back by quitting the
+program. *Fair share* (PSS) also includes an even split of the memory it shares with
+other processes, so fair shares add up without double counting.
 
 ## Usage
 
@@ -67,8 +68,9 @@ other users' processes. Without root, the report says what it had to leave out.
 
 | Option              | Meaning                                                |
 | ------------------- | ------------------------------------------------------ |
+| `-d, --detailed`    | break totals down and add a section per data source    |
 | `-n, --programs N`  | how many programs to list (default 15)                 |
-| `-s, --slabs N`     | how many slab caches to list (default 12)              |
+| `-s, --slabs N`     | how many slab caches to list with `-d` (default 12)    |
 | `-p, --per-process` | list individual processes instead of grouping them     |
 | `--color WHEN`      | `auto` (default), `always` or `never`; honors NO_COLOR |
 

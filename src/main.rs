@@ -32,13 +32,18 @@ struct Cli {
     #[arg(short = 'n', long, default_value_t = 15)]
     programs: usize,
 
-    /// How many kernel slab caches to list
+    /// How many kernel slab caches to list (with --detailed)
     #[arg(short, long, default_value_t = 12)]
     slabs: usize,
 
     /// List individual processes instead of grouping them by program
     #[arg(short, long)]
     per_process: bool,
+
+    /// Break every total down and add sections for ZFS, kernel slab, caches, swap and
+    /// fragmentation
+    #[arg(short, long)]
+    detailed: bool,
 
     /// When to use colors
     #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
@@ -55,8 +60,12 @@ fn main() -> anyhow::Result<()> {
     .write_global();
 
     let snapshot = snapshot::Snapshot::collect()?;
-    let options =
-        report::Options { programs: cli.programs, slabs: cli.slabs, per_process: cli.per_process };
+    let options = report::Options {
+        programs: cli.programs,
+        slabs: cli.slabs,
+        per_process: cli.per_process,
+        detailed: cli.detailed,
+    };
     let text = report::render(&snapshot, &options);
     match anstream::stdout().lock().write_all(text.as_bytes()) {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),

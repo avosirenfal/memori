@@ -1,7 +1,8 @@
 //! Turns a [`Snapshot`] into the text report.
 //!
 //! Every section is a function returning its lines; sections with nothing to say return
-//! no lines and are skipped.
+//! no lines and are skipped. The summary is the overview plus the programs table; the
+//! detailed report adds a section per data source.
 
 use std::cmp::Reverse;
 use std::collections::HashSet;
@@ -17,7 +18,6 @@ use crate::slab::SlabCache;
 use crate::snapshot::Snapshot;
 use crate::source::Source;
 use crate::units::Bytes;
-use crate::zfs::ArcStats;
 
 pub struct Options {
     /// How many programs to list.
@@ -26,24 +26,31 @@ pub struct Options {
     pub slabs: usize,
     /// List individual processes instead of grouping them by program.
     pub per_process: bool,
+    /// Break every total down and add a section per data source.
+    pub detailed: bool,
 }
 
 pub fn render(snapshot: &Snapshot, options: &Options) -> String {
     let breakdown = Breakdown::of(snapshot);
-    let sections = [
+    let summary = [
         header(snapshot),
-        overview(snapshot, &breakdown),
+        overview(snapshot, &breakdown, options.detailed),
         programs(snapshot, options),
-        zfs(snapshot),
-        kernel(snapshot, options),
-        caches(snapshot, &breakdown),
-        swap(snapshot),
-        fragmentation(snapshot),
-        unexplained(snapshot, &breakdown),
-        notes(snapshot),
     ];
-    let body: Vec<String> = sections
+    let details = options.detailed.then(|| {
+        [
+            zfs(snapshot),
+            kernel(snapshot, options),
+            caches(snapshot, &breakdown),
+            swap(snapshot),
+            fragmentation(snapshot),
+            unexplained(snapshot, &breakdown),
+            notes(snapshot),
+        ]
+    });
+    let body: Vec<String> = summary
         .into_iter()
+        .chain(details.into_iter().flatten())
         .filter(|lines| !lines.is_empty())
         .map(|lines| lines.join("\n"))
         .collect();
@@ -76,30 +83,8 @@ fn heading(title: &str) -> String {
     paint(BOLD, format!("━━ {title} {rule}"))
 }
 
-/// Explanatory text: word-wrapped and dimmed.
-fn prose(indent: usize, text: &str) -> Vec<String> {
-    wrap(indent, text).into_iter().map(|line| paint(DIM, line)).collect()
-}
-
-/// Something the reader should act on: word-wrapped and highlighted.
-fn warning(text: &str) -> Vec<String> {
-    let lines = wrap(4, text);
-    let first = lines.first().map(|line| format!("  ⚠ {}", line.trim_start()));
-    first.into_iter().chain(lines.into_iter().skip(1)).map(|line| paint(WARN, line)).collect()
-}
-
-/// Greedy word wrap to `WIDTH`, each line indented by `indent`.
-fn wrap(indent: usize, text: &str) -> Vec<String> {
-    text.split_whitespace().fold(Vec::<String>::new(), |mut lines, word| {
-        match lines.last_mut() {
-            Some(line) if line.chars().count() + 1 + word.chars().count() <= WIDTH => {
-                line.push(' ');
-                line.push_str(word);
-            }
-            _ => lines.push(format!("{:indent$}{word}", "")),
-        }
-        lines
-    })
+fn warning(text: &str) -> String {
+    paint(WARN, format!("  ⚠ {text}"))
 }
 
 fn truncate(text: &str, max: usize) -> String {
@@ -111,16 +96,18 @@ fn truncate(text: &str, max: usize) -> String {
     }
 }
 
+/// A right-aligned percentage, so a column of them lines up.
 fn percent(part: Bytes, whole: Bytes) -> String {
-    match 100.0 * part.fraction_of(whole) {
+    let text = match 100.0 * part.fraction_of(whole) {
         p if p > 0.0 && p < 1.0 => "<1%".to_owned(),
         p => format!("{p:.0}%"),
-    }
+    };
+    format!("{text:>4}")
 }
 
 /// `indent label ........ amount  note`. `label` may contain styling, so its visible
 /// width is measured from `plain`.
-fn styled_row(plain: &str, styled: String, amount: impl Display, note: &str) -> String {
+fn styled_row(plain: &str, styled: &str, amount: impl Display, note: &str) -> String {
     let padding = " ".repeat(LABEL.saturating_sub(plain.chars().count()));
     let note = if note.is_empty() { String::new() } else { format!("  {}", paint(DIM, note)) };
     format!("{styled}{padding}{amount:>10}{note}")
@@ -128,7 +115,12 @@ fn styled_row(plain: &str, styled: String, amount: impl Display, note: &str) -> 
 
 fn row(indent: usize, label: &str, amount: impl Display, note: &str) -> String {
     let plain = format!("{:indent$}{label}", "");
-    styled_row(&plain, plain.clone(), amount, note)
+    styled_row(&plain, &plain, amount, note)
+}
+
+fn bold_row(indent: usize, label: &str, amount: impl Display, note: &str) -> String {
+    let plain = format!("{:indent$}{label}", "");
+    styled_row(&plain, &paint(BOLD, &plain), paint(BOLD, format!("{amount:>10}")), note)
 }
 
 // ─── Category presentation ───────────────────────────────────────────────────────────────
@@ -144,7 +136,7 @@ fn label(category: Category) -> &'static str {
         Category::Gpu => "GPU buffers in system RAM (amdgpu GTT)",
         Category::HugePages => "Huge pages (reserved pool)",
         Category::Unexplained => "Unexplained (no counter covers it)",
-        Category::ZfsArc => "ZFS ARC (ZFS's own disk cache)",
+        Category::ZfsArc => "ZFS ARC",
         Category::FileCache => "File cache (copies of files on disk)",
         Category::KernelCaches => "Kernel caches (reclaimable slab)",
         Category::Free => "Free",
@@ -184,7 +176,7 @@ fn title(reclaim: Reclaim) -> (&'static str, &'static str) {
         Reclaim::InUse => ("In use", "freed only by quitting programs"),
         Reclaim::Shrinkable => ("Shrinkable", "given back when RAM runs low"),
         Reclaim::Cache => ("Cache", "dropped instantly when needed"),
-        Reclaim::Free => ("Free", "not used for anything"),
+        Reclaim::Free => ("Free", ""),
     }
 }
 
@@ -222,7 +214,7 @@ fn header(snapshot: &Snapshot) -> Vec<String> {
     vec![paint(BOLD, line)]
 }
 
-fn overview(snapshot: &Snapshot, breakdown: &Breakdown) -> Vec<String> {
+fn overview(snapshot: &Snapshot, breakdown: &Breakdown, detailed: bool) -> Vec<String> {
     let mem = &snapshot.meminfo;
     let total = breakdown.total;
     let groups: Vec<(Reclaim, Vec<Slice>)> = Reclaim::ALL
@@ -247,63 +239,59 @@ fn overview(snapshot: &Snapshot, breakdown: &Breakdown) -> Vec<String> {
         .collect();
 
     let group_rows = groups.iter().flat_map(|(reclaim, slices)| {
-        let (name, meaning) = title(*reclaim);
+        let (group_name, meaning) = title(*reclaim);
+        // A group of one category is named after it, and needs no breakdown.
+        let name = match slices[..] {
+            [only] => label(only.category),
+            _ => group_name,
+        };
         let sum: Bytes = slices.iter().map(|s| s.bytes).sum();
-        let plain = format!("  {} {name} · {meaning}", glyph(*reclaim));
-        let styled = format!(
-            "  {} {} {}",
-            glyph(*reclaim),
-            paint(BOLD, name),
-            paint(DIM, format!("· {meaning}"))
-        );
-        let group_row = styled_row(&plain, styled, sum, &format!("{:>4}", percent(sum, total)));
-        // A group of one category says everything in its own row.
-        let category_rows = (slices.len() > 1 || *reclaim == Reclaim::Shrinkable).then(|| {
+        let plain = format!("  {} {name}", glyph(*reclaim));
+        let styled = format!("  {} {}", glyph(*reclaim), paint(BOLD, name));
+        let note = format!("{}  {meaning}", percent(sum, total));
+        let group_row = styled_row(&plain, &styled, sum, note.trim_end());
+        let category_rows = (detailed && slices.len() > 1).then(|| {
             slices.iter().map(|slice| {
                 let name = label(slice.category);
                 let plain = format!("      ■ {name}");
                 let styled = format!("      {} {name}", paint(color(slice.category), "■"));
-                let share = format!("{:>4}", percent(slice.bytes, total));
-                styled_row(&plain, styled, slice.bytes, &share)
+                styled_row(&plain, &styled, slice.bytes, &percent(slice.bytes, total))
             })
         });
         std::iter::once(group_row).chain(category_rows.into_iter().flatten())
     });
 
-    let arc_extra = snapshot.arc.available().map(ArcStats::shrinkable).filter(|b| *b >= NOTICEABLE);
-    let available = [
-        Some(row(
-            2,
-            "Available for new programs",
-            mem.available,
-            "free + droppable cache (MemAvailable)",
-        )),
-        arc_extra.map(|extra| row(4, "+ if the ZFS ARC shrinks to its minimum", extra, "")),
-        Some(row(
+    let overlap = match breakdown.remainder {
+        Remainder::Overcounted(extra) if extra >= Bytes(64 << 20) => {
+            Some(row(2, "Counted twice", extra, "some kernel counters overlap"))
+        }
+        _ => None,
+    };
+    let arc_shrink = snapshot.arc.available().map(|arc| arc.shrinkable());
+    let availability = match arc_shrink {
+        Some(shrink) => vec![
+            row(2, "Available", mem.available, "free + droppable cache (MemAvailable)"),
+            row(2, "ZFS ARC can shrink by", shrink, "down to its minimum size"),
+            bold_row(2, "Total available", mem.available + shrink, ""),
+        ],
+        None => vec![bold_row(2, "Available", mem.available, "free + droppable cache")],
+    };
+    let classic = detailed.then(|| {
+        row(
             2,
             "\"used\" as classic `free` reports it",
             mem.classic_used(),
             "total − free − buff/cache",
-        )),
-    ];
-    let overlap = match breakdown.remainder {
-        Remainder::Overcounted(extra) if extra >= Bytes(64 << 20) => prose(
-            2,
-            &format!(
-                "Note: some of the kernel's counters overlap by about {extra} (typically ZFS \
-                 buffers that are also counted as kernel slab), so the categories add up to a \
-                 little more than your total RAM."
-            ),
-        ),
-        _ => vec![],
-    };
+        )
+    });
 
     [
         vec![heading("WHERE YOUR RAM IS"), String::new(), format!("  {bar}"), String::new()],
         group_rows.collect(),
+        overlap.into_iter().collect(),
         vec![String::new()],
-        available.into_iter().flatten().collect(),
-        overlap,
+        availability,
+        classic.into_iter().collect(),
     ]
     .concat()
 }
@@ -347,70 +335,41 @@ fn programs(snapshot: &Snapshot, options: &Options) -> Vec<String> {
     let rest_sum: Rollup = rest.iter().map(|r| r.mem).sum();
     let all: Rollup = rows.iter().map(|r| r.mem).sum();
 
-    let line = |name: &str, who: &str, mem: &Rollup| {
-        format!(
-            "  {:<26}{:>11}{:>11}{:>12}{:>10}",
-            truncate(name, 25),
-            who,
-            mem.unique(),
-            mem.pss,
-            mem.swap
-        )
-    };
-    let table_header = paint(
-        BOLD,
-        format!("  {:<26}{:>11}{:>11}{:>12}{:>10}", "Program", "", "Unique", "Fair share", "Swap"),
-    );
+    let line =
+        |name: &str, who: &str, unique: &dyn Display, fair: &dyn Display, swap: &dyn Display| {
+            format!("  {:<24}{:>10}{:>15}{:>15}{:>10}", truncate(name, 23), who, unique, fair, swap)
+        };
+    let mem_line =
+        |name: &str, who: &str, mem: &Rollup| line(name, who, &mem.unique(), &mem.pss, &mem.swap);
+    let table_header = [
+        paint(BOLD, line("Program", "", &"Unique", &"Fair share", &"Swap")),
+        paint(DIM, line("", "", &"freed if quit", &"incl. shared", &"").trim_end()),
+    ];
     let body = shown.iter().map(|r| match &r.detail {
         Some(detail) => {
-            format!("{}  {}", line(&r.name, &r.who, &r.mem), paint(DIM, truncate(detail, 28)))
+            format!("{}  {}", mem_line(&r.name, &r.who, &r.mem), paint(DIM, truncate(detail, 28)))
         }
-        None => line(&r.name, &r.who, &r.mem),
+        None => mem_line(&r.name, &r.who, &r.mem),
     });
     let rest_line = (!rest.is_empty())
-        .then(|| paint(DIM, line(&format!("…{} more", rest.len()), "", &rest_sum)));
+        .then(|| paint(DIM, mem_line(&format!("…{} more", rest.len()), "", &rest_sum)));
     let total_line =
-        paint(BOLD, line(&format!("All {} processes", scan.processes.len()), "", &all));
-    let composition = prose(
-        4,
-        &format!(
-            "Fair shares in total: {} programs' own data, {} mapped files (code, libraries), \
-             {} shared memory.",
-            all.pss_anon, all.pss_file, all.pss_shmem
-        ),
-    );
+        paint(BOLD, mem_line(&format!("All {} processes", scan.processes.len()), "", &all));
     let unreadable = match scan.unreadable {
-        0 => vec![],
-        1 => warning(
-            "1 process belongs to another user and couldn't be inspected; run with sudo to include it.",
-        ),
-        n => warning(&format!(
-            "{n} processes belong to other users and couldn't be inspected; run with sudo to include them."
-        )),
+        0 => None,
+        1 => Some(warning("1 process of another user unreadable; run with sudo to include it")),
+        n => Some(warning(&format!(
+            "{n} processes of other users unreadable; run with sudo to include them"
+        ))),
     };
 
     [
         vec![heading("PROGRAMS"), String::new()],
-        prose(
-            2,
-            &format!(
-                "{} Unique (USS) is memory no other process uses: roughly what you get back \
-                 by quitting the program. Fair share (PSS) also splits memory shared between \
-                 processes (libraries, shared buffers) evenly among them, so fair shares add \
-                 up without double counting.",
-                if options.per_process {
-                    "Largest processes first."
-                } else {
-                    "Grouped by executable, largest first."
-                }
-            ),
-        ),
-        vec![String::new(), table_header],
+        table_header.to_vec(),
         body.collect(),
         rest_line.into_iter().collect(),
-        vec![format!("  {}", "─".repeat(68)), total_line],
-        composition,
-        unreadable,
+        vec![format!("  {}", "─".repeat(74)), total_line],
+        unreadable.into_iter().collect(),
     ]
     .concat()
 }
@@ -431,28 +390,18 @@ fn zfs(snapshot: &Snapshot) -> Vec<String> {
         row(2, "Hit rate", format!("{:.1}%", 100.0 * ratio), "reads served from RAM since boot")
     });
     [
-        vec![heading("ZFS ARC"), String::new()],
-        prose(
-            2,
-            "ZFS keeps its own disk cache, the ARC, instead of using the kernel's file cache, \
-             so tools like `free` count it as used. The ARC gives memory back when programs \
-             need it, but never shrinks below its minimum.",
-        ),
         vec![
+            heading("ZFS ARC"),
             String::new(),
-            format!("{}  {gauge}", row(2, "Size now", s.size, "")),
-            row(2, "Target", s.target, "the size the ARC is currently steering toward"),
-            row(2, "Minimum", s.min, &format!("so it can give back up to {}", arc.shrinkable())),
+            format!("{}  {gauge}", row(2, "Size", s.size, "")),
+            row(2, "Target", s.target, "size the ARC is steering toward"),
+            row(2, "Minimum", s.min, "it never shrinks below this"),
+            row(2, "Can shrink by", arc.shrinkable(), ""),
             "  Holding".to_owned(),
             row(4, "file data", s.data, ""),
             row(4, "metadata", s.metadata, ""),
-            row(4, "bookkeeping", arc.bookkeeping(), "headers, dnodes, dbufs"),
+            row(4, "bookkeeping", arc.bookkeeping(), "headers, dnodes, dbufs; counted as slab"),
         ],
-        prose(
-            6,
-            "Bookkeeping lives in kernel slab caches, so the overview counts it there rather \
-             than under ZFS ARC.",
-        ),
         hit_rate.into_iter().collect(),
     ]
     .concat()
@@ -474,19 +423,15 @@ fn kernel(snapshot: &Snapshot, options: &Options) -> Vec<String> {
             mem.page_tables + mem.secondary_page_tables,
             "map programs' memory onto physical RAM",
         ),
-        row(2, "Kernel stacks", mem.kernel_stack, "one small stack per thread"),
+        row(2, "Kernel stacks", mem.kernel_stack, "one per thread"),
         row(2, "Per-CPU data", mem.percpu, ""),
         row(2, "vmalloc", mem.vmalloc_used, "large kernel buffers; overlaps the above"),
     ];
     let slabs = match &snapshot.slabs {
         Source::Available(caches) => slab_table(caches, options.slabs),
-        Source::NeedsRoot => [
-            vec![String::new()],
-            warning(
-                "Run with sudo to see which kernel caches hold the slab memory (like slabtop).",
-            ),
-        ]
-        .concat(),
+        Source::NeedsRoot => {
+            vec![String::new(), warning("slab cache breakdown needs root; run with sudo")]
+        }
         Source::Absent | Source::Broken(_) => vec![],
     };
     [vec![heading("KERNEL"), String::new()], counters.to_vec(), slabs].concat()
@@ -500,12 +445,16 @@ fn slab_table(caches: &[SlabCache], limit: usize) -> Vec<String> {
     let wasted_unreclaimable: Bytes =
         caches.iter().filter(|c| c.reclaimable == Some(false)).map(SlabCache::wasted).sum();
 
-    let line = |name: &str, size: Bytes, used: String, wasted: Bytes, freeable: &str| {
+    let line = |name: &str,
+                size: &dyn Display,
+                full: &dyn Display,
+                wasted: &dyn Display,
+                freeable: &str| {
         let text = format!(
             "  {:<24}{:>10}{:>7}{:>10}{:>10}",
             truncate(name, 23),
             size,
-            used,
+            full,
             wasted,
             freeable
         );
@@ -514,8 +463,9 @@ fn slab_table(caches: &[SlabCache], limit: usize) -> Vec<String> {
     let table_header = paint(
         BOLD,
         format!(
-            "  {:<24}{:>10}{:>7}{:>10}{:>10}  {}",
-            "Cache", "Size", "Full", "Wasted", "Freeable", "What it holds"
+            "{}  {}",
+            line("Slab cache", &"Size", &"Full", &"Wasted", "Freeable"),
+            "What it holds"
         ),
     );
     let body = caches.iter().take(limit).map(|cache| {
@@ -525,43 +475,33 @@ fn slab_table(caches: &[SlabCache], limit: usize) -> Vec<String> {
             None => "?",
         };
         let full = percent(cache.in_use(), cache.footprint);
-        let text = line(&cache.name, cache.footprint, full, cache.wasted(), freeable);
+        let text = line(&cache.name, &cache.footprint, &full, &cache.wasted(), freeable);
         format!("{text}  {}", paint(DIM, cache.description().unwrap_or("")))
     });
-    let total_line = paint(
-        BOLD,
-        line(
-            &format!("All {} caches", caches.len()),
-            footprint,
-            percent(in_use, footprint),
+    let all = format!("All {} caches", caches.len());
+    let total_line = paint(BOLD, line(&all, &footprint, &percent(in_use, footprint), &wasted, ""));
+    let fragmentation = [
+        Some(row(
+            2,
+            "Slab fragmentation",
             wasted,
-            "",
-        ),
-    );
-    let reclaim_known = caches.iter().any(|c| c.reclaimable.is_some());
-    let unreclaimable_clause = if reclaim_known {
-        format!(
-            " {wasted_unreclaimable} of it is in unreclaimable caches, where it can stay stuck \
-             until the objects sharing those slabs are freed."
-        )
-    } else {
-        String::new()
-    };
+            &format!("{} of slab memory is empty space", percent(wasted, footprint).trim()),
+        )),
+        caches.iter().any(|c| c.reclaimable.is_some()).then(|| {
+            row(
+                4,
+                "in unreclaimable caches",
+                wasted_unreclaimable,
+                "stuck until neighbours are freed",
+            )
+        }),
+    ];
 
     [
-        vec![String::new()],
-        prose(2, "Slab caches, largest first (what `slabtop -s c` shows):"),
-        vec![table_header],
+        vec![String::new(), table_header],
         body.collect(),
-        vec![format!("  {}", "─".repeat(61)), total_line],
-        prose(
-            2,
-            &format!(
-                "Fragmentation: {wasted} ({}) of slab memory holds no objects; it is empty \
-                 space inside partly filled slabs.{unreclaimable_clause}",
-                percent(wasted, footprint)
-            ),
-        ),
+        vec![format!("  {}", "─".repeat(61)), total_line, String::new()],
+        fragmentation.into_iter().flatten().collect(),
     ]
     .concat()
 }
@@ -597,18 +537,13 @@ fn caches(snapshot: &Snapshot, breakdown: &Breakdown) -> Vec<String> {
                 "written out before it can be dropped",
             ),
             String::new(),
-            row(2, "Shared memory & tmpfs", mem.shmem, "lives only in RAM: can't be dropped"),
+            row(2, "Shared memory & tmpfs", mem.shmem, "can't be dropped; `free` calls it cache"),
         ],
         mounts,
         (elsewhere >= NOTICEABLE)
-            .then(|| row(4, "elsewhere", elsewhere, "shared memory segments, memfd, GPU buffers"))
+            .then(|| row(4, "elsewhere", elsewhere, "SysV/POSIX shm, memfd, GPU buffers"))
             .into_iter()
             .collect(),
-        prose(
-            2,
-            "`free` counts shared memory as buff/cache, but unlike the file cache it can only \
-             be freed by deleting the files or swapping it out.",
-        ),
     ]
     .concat()
 }
@@ -619,51 +554,26 @@ fn swap(snapshot: &Snapshot) -> Vec<String> {
     if mem.swap_total == Bytes::ZERO && zram.is_empty() {
         return vec![];
     }
-    let devices: Vec<String> = snapshot
-        .swaps
-        .available()
-        .into_iter()
-        .flatten()
-        .map(|device| {
-            let kind = if device.path.contains("zram") { "zram" } else { device.kind.as_str() };
-            let label = format!("{} ({kind})", truncate(&device.path, 30));
-            row(4, &label, device.used, &format!("of {}", device.size))
-        })
-        .collect();
+    let devices = snapshot.swaps.available().into_iter().flatten().map(|device| {
+        let kind = if device.path.contains("zram") { "zram" } else { device.kind.as_str() };
+        let label = format!("{} ({kind})", truncate(&device.path, 30));
+        row(4, &label, device.used, &format!("of {}", device.size))
+    });
     let compression = zram.iter().map(|z| {
         let ratio = z.original.0 as f64 / z.ram_used.0.max(1) as f64;
-        format!(
-            "{} holds {} of swapped data compressed into {} of RAM ({ratio:.1}× smaller).",
-            z.name, z.original, z.ram_used
-        )
+        let note = format!("holds {} ({ratio:.1}× compression)", z.original);
+        row(4, &format!("{} RAM used", z.name), z.ram_used, &note)
     });
-    let groups = procs::by_program(&snapshot.processes.processes);
-    let swapped = sorted_by_key(groups, |g| Reverse(g.mem.swap));
-    let biggest: Vec<String> = swapped
-        .iter()
-        .filter(|g| g.mem.swap >= NOTICEABLE)
-        .take(5)
-        .map(|g| format!("{} {}", g.name, g.mem.swap))
-        .collect();
+    let swap_used = mem.swap_total.saturating_sub(mem.swap_free);
     [
         vec![
             heading("SWAP"),
             String::new(),
-            row(
-                2,
-                "Swap in use",
-                mem.swap_total.saturating_sub(mem.swap_free),
-                &format!("of {}", mem.swap_total),
-            ),
+            row(2, "Swap in use", swap_used, &format!("of {}", mem.swap_total)),
         ],
-        devices,
-        compression.flat_map(|text| prose(2, &text)).collect(),
+        devices.collect(),
+        compression.collect(),
         vec![row(2, "Swap cache", mem.swap_cached, "pages kept both in RAM and in swap")],
-        if biggest.is_empty() {
-            vec![]
-        } else {
-            prose(2, &format!("Most swapped out: {}.", biggest.join(", ")))
-        },
     ]
     .concat()
 }
@@ -677,35 +587,21 @@ fn fragmentation(snapshot: &Snapshot) -> Vec<String> {
     if free < Bytes(64 << 20) {
         return vec![];
     }
-    let large =
-        split.iter().find(|(size, _)| *size == BlockSize::Large).map_or(Bytes::ZERO, |(_, b)| *b);
+    let large = split
+        .iter()
+        .find(|(size, _)| *size == BlockSize::Large)
+        .map_or(Bytes::ZERO, |(_, bytes)| *bytes);
     let verdict = match large.fraction_of(free) {
-        f if f >= 0.5 => "Healthy: most free memory sits in large blocks.",
-        f if f >= 0.2 => "Somewhat fragmented: large blocks are getting scarce.",
-        _ => {
-            "Fragmented: little free memory is in large blocks, so huge pages and big driver \
-             allocations make the kernel stop and compact memory first."
-        }
+        f if f >= 0.5 => "healthy",
+        f if f >= 0.2 => "getting fragmented",
+        _ => "fragmented: huge pages need compaction",
     };
-    [
-        vec![heading("FREE MEMORY FRAGMENTATION"), String::new()],
-        prose(
-            2,
-            "The kernel hands out free memory in contiguous blocks of 4 KiB up to 4 MiB. Huge \
-             pages and some drivers need large blocks; if free memory is chopped into small \
-             pieces, they can't get them without first moving memory around.",
-        ),
-        vec![String::new()],
-        split
-            .iter()
-            .map(|(size, bytes)| {
-                let share = format!("{:>4}", percent(*bytes, free));
-                row(2, &format!("Free {}", size.label()), *bytes, &share)
-            })
-            .collect(),
-        prose(2, verdict),
-    ]
-    .concat()
+    let rows = split.iter().map(|(size, bytes)| {
+        let share = percent(*bytes, free);
+        let note = if *size == BlockSize::Large { format!("{share}  {verdict}") } else { share };
+        row(2, &format!("Free {}", size.label()), *bytes, &note)
+    });
+    [vec![heading("FREE MEMORY FRAGMENTATION"), String::new()], rows.collect()].concat()
 }
 
 fn unexplained(snapshot: &Snapshot, breakdown: &Breakdown) -> Vec<String> {
@@ -717,28 +613,18 @@ fn unexplained(snapshot: &Snapshot, breakdown: &Breakdown) -> Vec<String> {
     }
     let vmalloc = mem.vmalloc_used.saturating_sub(mem.kernel_stack);
     let suspects = [
-        (vmalloc >= NOTICEABLE).then(|| {
-            row(4, "vmalloc (not counting kernel stacks)", vmalloc, "large kernel buffers")
-        }),
-        (mem.balloon >= NOTICEABLE)
-            .then(|| row(4, "VM balloon", mem.balloon, "handed back to the hypervisor")),
+        (vmalloc >= NOTICEABLE)
+            .then(|| row(4, "vmalloc (excluding kernel stacks)", vmalloc, "possible source")),
+        (mem.balloon >= NOTICEABLE).then(|| row(4, "VM balloon", mem.balloon, "possible source")),
+        Some(row(4, "pages drivers allocate directly", "?", "e.g. NVIDIA, i915; not reported")),
     ];
     [
-        vec![heading("UNEXPLAINED MEMORY"), String::new()],
-        prose(
-            2,
-            &format!(
-                "{amount} of RAM isn't covered by any of the kernel's counters. Things that \
-                 commonly hide there:"
-            ),
-        ),
+        vec![
+            heading("UNEXPLAINED MEMORY"),
+            String::new(),
+            row(2, "Not covered by any kernel counter", amount, ""),
+        ],
         suspects.into_iter().flatten().collect(),
-        prose(
-            4,
-            "and pages that drivers allocate directly, which the kernel doesn't count: \
-             notably the NVIDIA and Intel GPU drivers, and network or storage drivers' DMA \
-             buffers.",
-        ),
     ]
     .concat()
 }
@@ -752,8 +638,7 @@ fn notes(snapshot: &Snapshot) -> Vec<String> {
     ];
     let lines: Vec<String> = broken
         .into_iter()
-        .filter_map(|(what, reason)| Some(warning(&format!("Couldn't read {what}: {}", reason?))))
-        .flatten()
+        .filter_map(|(what, reason)| Some(warning(&format!("couldn't read {what}: {}", reason?))))
         .collect();
     if lines.is_empty() {
         return vec![];
@@ -874,20 +759,35 @@ mod tests {
     }
 
     #[test]
-    fn renders_a_zfs_workstation() {
+    fn summary_shows_sums_and_programs_only() {
         let snapshot = zfs_workstation();
-        let options = Options { programs: 2, slabs: 5, per_process: false };
+        let options = Options { programs: 2, slabs: 5, per_process: false, detailed: false };
+        let text = render(&snapshot, &options);
+        println!("{text}");
+        assert!(text.contains("Total available"));
+        assert!(text.contains("31.4 GiB")); // 11.4 GiB MemAvailable + 20.0 GiB ARC shrink
+        assert!(text.contains("2 procs"));
+        assert!(text.contains("…1 more"));
+        assert!(!text.contains("Page tables"));
+        assert!(!text.contains("KERNEL"));
+    }
+
+    #[test]
+    fn detailed_report_covers_every_source() {
+        let snapshot = zfs_workstation();
+        let options = Options { programs: 2, slabs: 5, per_process: false, detailed: true };
         let text = render(&snapshot, &options);
         println!("{text}");
         let breakdown = Breakdown::of(&snapshot);
         // ARC minus the bookkeeping already counted as slab.
         assert_eq!(breakdown.bytes(Category::ZfsArc), Bytes(20 << 30));
         assert_eq!(breakdown.bytes(Category::CompressedSwap), Bytes(512 << 20));
-        assert!(text.contains("ZFS ARC"));
-        assert!(text.contains("2 procs"));
-        assert!(text.contains("…1 more"));
-        assert!(text.contains("(4.0×"));
-        assert!(text.contains("Fragmented"));
+        for section in ["ZFS ARC", "KERNEL", "SWAP", "FRAGMENTATION", "UNEXPLAINED"] {
+            assert!(text.contains(section), "missing {section}");
+        }
+        assert!(text.contains("Page tables"));
+        assert!(text.contains("4.0× compression"));
+        assert!(text.contains("fragmented: huge pages need compaction"));
     }
 
     #[test]
