@@ -9,53 +9,44 @@ memori reads all of those sources at once and adds them up so that every byte of
 lands in exactly one category. Each category also says how easily its memory comes back.
 
 ```
-━━ WHERE YOUR RAM IS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━ OVERVIEW ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   ███████████████████████████████████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒░░░░
 
-  █ In use                                      30.5 GiB   49%  freed only by quitting programs
-  ▓ ZFS ARC                                     20.0 GiB   32%  given back when RAM runs low
-  ▒ Cache                                        8.2 GiB   13%  dropped instantly when needed
-  ░ Free                                         3.8 GiB    6%
+  █ In use                 30.5 GiB  49%
+  ▓ ZFS ARC                20.0 GiB  32%
+  ▒ Cache                   8.2 GiB  13%
+  ░ Free                    3.8 GiB   6%
 
-  Available                                     11.4 GiB  free + droppable cache (MemAvailable)
-  ZFS ARC can shrink by                         20.0 GiB  down to its minimum size
-  Total available                               31.4 GiB
+  Held back by the kernel  −586 MiB
+  Available                11.4 GiB
+  ZFS ARC can shrink by    20.0 GiB
+  Total available          31.4 GiB
 
 ━━ PROGRAMS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Program                                    Unique     Fair share      Swap
-                                      freed if quit   incl. shared
-  firefox                    2 procs        7.2 GiB        9.0 GiB   461 MiB
-  java                       pid 200        4.0 GiB        5.0 GiB   256 MiB
-  …1 more                                   819 MiB        1.0 GiB    51 MiB
-  ──────────────────────────────────────────────────────────────────────────
-  All 4 processes                          12.0 GiB       15.0 GiB   768 MiB
+      PID  Program          Procs       RAM     Swap
+      100  firefox              2   9.0 GiB  461 MiB
+  2909719  java                     5.0 GiB  256 MiB
+           …1 more                  1.0 GiB   51 MiB
+  ──────────────────────────────────────────────────
+           All 4 processes         15.0 GiB  768 MiB
 ```
 
 (This sample comes from the synthetic test system in `src/report.rs`.)
 
-That is the default summary. With `--detailed`, every total in the overview is broken
-down into its categories, and these sections follow:
+The overview puts every byte of RAM into one of four groups: memory in use, the ZFS
+ARC (which shrinks when RAM runs low), cache the kernel can drop, and free memory.
+"Available" is the kernel's own estimate (`MemAvailable`). It is lower than free plus
+cache because the kernel keeps reserves for itself; the "Held back by the kernel" row
+shows the difference, so the rows add up.
 
-- **ZFS ARC**: its size, target, minimum and maximum, what it holds, how much it could
-  give back, and the hit rate.
-- **Kernel**: slab, page tables, stacks, per-CPU data and vmalloc, followed by the
-  largest slab caches (`slabtop -s c`). Each cache gets a plain-language description,
-  how full it is, how much space it wastes to fragmentation, and whether the kernel
-  can free it.
-- **File cache & shared memory**: active and inactive cache, dirty pages, and the tmpfs
-  mounts that make up shared memory. `free` counts shared memory as cache even though
-  it can't be dropped.
-- **Swap**: swap devices and zram compression ratios.
-- **Free memory fragmentation**: how much free RAM is in large contiguous blocks,
-  from `/proc/buddyinfo`.
-- **Unexplained memory**: if a lot of RAM isn't covered by any counter, the measurable
-  suspects.
-
-In the programs table, *Unique* (USS) is roughly what you get back by quitting the
-program. *Fair share* (PSS) also includes an even split of the memory it shares with
-other processes, so fair shares add up without double counting.
+In the programs table, processes are grouped by executable. PID is the group's root
+process, the oldest one whose parent isn't in the group. RAM is the proportional set
+size (PSS): each page shared between processes is split evenly among them, so the RAM
+column adds up to the total without counting anything twice. Swap is the program's
+share of its memory that has been swapped out. Swapped memory isn't in the RAM column;
+on zram it still occupies RAM, compressed.
 
 ## Usage
 
@@ -66,13 +57,32 @@ sudo memori
 memori works without root, but the kernel only lets root read `/proc/slabinfo` and
 other users' processes. Without root, the report says what it had to leave out.
 
-| Option              | Meaning                                                |
-| ------------------- | ------------------------------------------------------ |
-| `-d, --detailed`    | break totals down and add a section per data source    |
-| `-n, --programs N`  | how many programs to list (default 15)                 |
-| `-s, --slabs N`     | how many slab caches to list with `-d` (default 12)    |
-| `-p, --per-process` | list individual processes instead of grouping them     |
-| `--color WHEN`      | `auto` (default), `always` or `never`; honors NO_COLOR |
+With no section flags, memori prints the overview and the programs table. Section flags
+print only the sections named; `-d` prints all of them.
+
+| Option                | Meaning                                                  |
+| --------------------- | -------------------------------------------------------- |
+| `-o, --overview`      | overview section                                         |
+| `-p, --programs`      | programs section                                         |
+| `-z, --zfs`           | ZFS ARC section                                          |
+| `-k, --kernel`        | kernel memory and slab caches (`slabtop -s c`)           |
+| `-c, --cache`         | file cache and shared memory                             |
+| `-s, --swap`          | swap and zram                                            |
+| `-f, --fragmentation` | free memory fragmentation (`/proc/buddyinfo`)            |
+| `-u, --unexplained`   | memory no kernel counter accounts for                    |
+| `-d, --detailed`      | every section, and the overview's totals broken down     |
+| `-a, --all`           | list all programs                                        |
+| `--top N`             | how many programs to list (default 15)                   |
+| `--slabs N`           | how many slab caches to list (default 12)                |
+| `-P, --per-process`   | list individual processes instead of grouping them       |
+| `-h, --headers`       | print title, headings, column headers, totals (default)  |
+| `-H, --no-headers`    | leave those out                                          |
+| `-n, --no-help`       | leave out explanations next to rows                      |
+| `--color WHEN`        | `auto` (default), `always` or `never`; honors NO_COLOR   |
+| `--help`              | print help                                               |
+
+For example, `memori -apH` prints every program and nothing else, one per line.
+Warnings (such as "run with sudo") appear only when both headers and help are on.
 
 ## Installing
 
