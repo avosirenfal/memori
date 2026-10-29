@@ -2,7 +2,7 @@
 
 use anyhow::ensure;
 
-use crate::procfs::{byte_fields, parse_colon_kv};
+use super::{byte_fields, parse_colon_kv};
 use crate::units::Bytes;
 
 byte_fields! {

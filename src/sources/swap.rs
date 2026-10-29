@@ -4,7 +4,7 @@ use std::fs;
 
 use anyhow::Context;
 
-use crate::procfs::unescape_octal;
+use super::unescape_octal;
 use crate::units::Bytes;
 
 pub const SWAPS: &str = "/proc/swaps";
@@ -12,10 +12,29 @@ pub const SWAPS: &str = "/proc/swaps";
 #[derive(Debug, Clone)]
 pub struct SwapDevice {
     pub path: String,
-    /// `partition` or `file`.
-    pub kind: String,
+    pub kind: SwapKind,
     pub size: Bytes,
     pub used: Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwapKind {
+    /// A compressed RAM disk: swapped pages still occupy RAM, compressed.
+    Zram,
+    Partition,
+    File,
+    Other(String),
+}
+
+impl SwapKind {
+    fn of(path: &str, kind: &str) -> Self {
+        match kind {
+            _ if path.starts_with("/dev/zram") => Self::Zram,
+            "partition" => Self::Partition,
+            "file" => Self::File,
+            other => Self::Other(other.to_owned()),
+        }
+    }
 }
 
 /// `Filename Type Size Used Priority`, sizes in KiB, after one header line.
@@ -32,9 +51,10 @@ pub fn parse_swaps(text: &str) -> anyhow::Result<Vec<SwapDevice>> {
                     .with_context(|| format!("bad line: {line}"))?;
                 Ok(Bytes(value * 1024))
             };
+            let path = unescape_octal(fields[0]);
             Ok(SwapDevice {
-                path: unescape_octal(fields[0]),
-                kind: fields.get(1).copied().unwrap_or("?").to_owned(),
+                kind: SwapKind::of(&path, fields.get(1).copied().unwrap_or_default()),
+                path,
                 size: kib(2)?,
                 used: kib(3)?,
             })
@@ -93,6 +113,7 @@ mod tests {
         let devices = parse_swaps(text).unwrap();
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].path, "/dev/zram0");
+        assert_eq!(devices[0].kind, SwapKind::Zram);
         assert_eq!(devices[0].used, Bytes(1024 * 1024));
     }
 }

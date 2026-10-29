@@ -5,8 +5,8 @@
 //! whatever no counter tracks.
 
 use crate::snapshot::Snapshot;
+use crate::sources::zfs::ArcStats;
 use crate::units::Bytes;
-use crate::zfs::ArcStats;
 
 /// How hard it is to get memory back from a category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,16 +120,16 @@ impl Breakdown {
     }
 
     /// All categories, including the unexplained remainder.
-    pub fn slices(&self) -> Vec<Slice> {
+    pub fn slices(&self) -> impl Iterator<Item = Slice> + '_ {
         let unexplained = Slice { category: Category::Unexplained, bytes: self.unexplained() };
-        self.known.iter().copied().chain([unexplained]).collect()
+        self.known.iter().copied().chain([unexplained])
     }
 
-    pub fn of_reclaim(&self, reclaim: Reclaim) -> Vec<Slice> {
-        self.slices().into_iter().filter(|s| s.category.reclaim() == reclaim).collect()
+    pub fn of_reclaim(&self, reclaim: Reclaim) -> impl Iterator<Item = Slice> + '_ {
+        self.slices().filter(move |slice| slice.category.reclaim() == reclaim)
     }
 
     pub fn bytes(&self, category: Category) -> Bytes {
-        self.slices().iter().filter(|s| s.category == category).map(|s| s.bytes).sum()
+        self.slices().filter(|slice| slice.category == category).map(|slice| slice.bytes).sum()
     }
 }

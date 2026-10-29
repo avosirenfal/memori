@@ -1,81 +1,4 @@
-//! /proc/slabinfo: the kernel's object caches, as `slabtop` shows them.
-
-use std::fs;
-
-use anyhow::{Context, ensure};
-
-use crate::units::Bytes;
-
-pub const SLABINFO: &str = "/proc/slabinfo";
-
-#[derive(Debug, Clone)]
-pub struct SlabCache {
-    pub name: String,
-    pub active_objects: u64,
-    pub object_size: Bytes,
-    /// Memory the cache occupies: all of its slabs, including empty slots (slabtop's CACHE SIZE).
-    pub footprint: Bytes,
-    /// Whether the kernel counts this cache as reclaimable (SReclaimable); `None` if unknown.
-    pub reclaimable: Option<bool>,
-}
-
-impl SlabCache {
-    pub fn in_use(&self) -> Bytes {
-        self.object_size.times(self.active_objects)
-    }
-
-    /// Slab memory that holds no live object: free slots in partly filled slabs, plus padding.
-    pub fn wasted(&self) -> Bytes {
-        self.footprint.saturating_sub(self.in_use())
-    }
-
-    pub fn description(&self) -> Option<&'static str> {
-        describe(&self.name)
-    }
-}
-
-/// Parses /proc/slabinfo; `reclaimable` says whether a cache (by name) is reclaimable.
-pub fn parse(
-    text: &str,
-    page_size: Bytes,
-    reclaimable: impl Fn(&str) -> Option<bool>,
-) -> anyhow::Result<Vec<SlabCache>> {
-    let mut lines = text.lines();
-    let version = lines.next().context("empty file")?;
-    ensure!(version.starts_with("slabinfo - version: 2."), "unknown format: {version}");
-    lines
-        .filter(|line| !line.starts_with('#'))
-        .map(|line| parse_line(line, page_size, &reclaimable))
-        .collect()
-}
-
-/// `name active_objs num_objs objsize objperslab pagesperslab : tunables .. : slabdata active_slabs num_slabs sharedavail`
-fn parse_line(
-    line: &str,
-    page_size: Bytes,
-    reclaimable: &impl Fn(&str) -> Option<bool>,
-) -> anyhow::Result<SlabCache> {
-    let fields: Vec<&str> = line.split_whitespace().collect();
-    ensure!(fields.len() >= 15, "short line: {line}");
-    let number = |index: usize| -> anyhow::Result<u64> {
-        fields[index].parse().with_context(|| format!("bad number in: {line}"))
-    };
-    let (pages_per_slab, slabs) = (number(5)?, number(14)?);
-    Ok(SlabCache {
-        name: fields[0].to_owned(),
-        active_objects: number(1)?,
-        object_size: Bytes(number(3)?),
-        footprint: page_size.times(pages_per_slab * slabs),
-        reclaimable: reclaimable(fields[0]),
-    })
-}
-
-/// SLUB publishes each cache's reclaimability in sysfs.
-pub fn reclaimable_from_sysfs(name: &str) -> Option<bool> {
-    fs::read_to_string(format!("/sys/kernel/slab/{name}/reclaim_account"))
-        .ok()
-        .map(|flag| flag.trim() == "1")
-}
+//! Plain-language descriptions of common kernel slab caches, by name.
 
 enum Pattern {
     Exact(&'static str),
@@ -159,7 +82,7 @@ const DESCRIPTIONS: &[(Pattern, &str)] = {
     ]
 };
 
-fn describe(name: &str) -> Option<&'static str> {
+pub fn describe(name: &str) -> Option<&'static str> {
     DESCRIPTIONS
         .iter()
         .find(|(pattern, _)| pattern.matches(name))
@@ -169,24 +92,6 @@ fn describe(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const SAMPLE: &str = "\
-slabinfo - version: 2.1
-# name            <active_objs> <num_objs> <objsize> <objperslab> <pagesperslab> : tunables <limit> <batchcount> <sharedfactor> : slabdata <active_slabs> <num_slabs> <sharedavail>
-dentry             1000   2000    192   21    1 : tunables    0    0    0 : slabdata     95     100      0
-kmalloc-8k           10     12   8192    4    8 : tunables    0    0    0 : slabdata      3       3      0
-";
-
-    #[test]
-    fn computes_footprint_and_waste_like_slabtop() {
-        let caches = parse(SAMPLE, Bytes(4096), |name| Some(name == "dentry")).unwrap();
-        let dentry = &caches[0];
-        assert_eq!(dentry.footprint, Bytes(100 * 4096));
-        assert_eq!(dentry.in_use(), Bytes(1000 * 192));
-        assert_eq!(dentry.wasted(), Bytes(100 * 4096 - 1000 * 192));
-        assert_eq!(dentry.reclaimable, Some(true));
-        assert_eq!(caches[1].footprint, Bytes(3 * 8 * 4096));
-    }
 
     #[test]
     fn describes_known_caches() {

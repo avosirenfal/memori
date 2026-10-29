@@ -17,6 +17,7 @@ rustPlatform.buildRustPackage {
       ../Cargo.lock
       ../src
       ../rustfmt.toml
+      ../README.md
     ];
   };
 

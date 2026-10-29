@@ -4,21 +4,21 @@ use std::fs;
 
 use anyhow::Context;
 
-use crate::buddy::{self, Zone};
-use crate::gpu::{self, GpuGtt};
-use crate::meminfo::{self, MemInfo};
-use crate::procs::{self, ProcessScan};
-use crate::slab::{self, SlabCache};
-use crate::source::Source;
-use crate::swap::{self, SwapDevice, Zram};
-use crate::tmpfs::{self, TmpfsMount};
+use crate::sources::Source;
+use crate::sources::buddy::{self, Zone};
+use crate::sources::gpu::{self, GpuGtt};
+use crate::sources::meminfo::{self, MemInfo};
+use crate::sources::procs::{self, ProcessScan};
+use crate::sources::slab::{self, SlabCache};
+use crate::sources::swap::{self, SwapDevice, Zram};
+use crate::sources::tmpfs::{self, TmpfsMount};
+use crate::sources::zfs::{self, ArcStats};
 use crate::units::Bytes;
-use crate::zfs::{self, ArcStats};
 
 #[derive(Debug)]
 pub struct Snapshot {
-    pub hostname: String,
-    pub kernel: String,
+    pub hostname: Option<String>,
+    pub kernel: Option<String>,
     pub page_size: Bytes,
     pub meminfo: MemInfo,
     pub arc: Source<ArcStats>,
@@ -37,17 +37,15 @@ impl Snapshot {
     pub fn collect() -> anyhow::Result<Self> {
         let page_size = Bytes(rustix::param::page_size() as u64);
         let meminfo_text = fs::read_to_string("/proc/meminfo").context("reading /proc/meminfo")?;
-        let read_trimmed = |path: &str| {
-            fs::read_to_string(path).map_or_else(|_| "?".to_owned(), |s| s.trim().to_owned())
-        };
+        let read_line = |path: &str| fs::read_to_string(path).ok().map(|s| s.trim().to_owned());
         Ok(Self {
-            hostname: read_trimmed("/proc/sys/kernel/hostname"),
-            kernel: read_trimmed("/proc/sys/kernel/osrelease"),
+            hostname: read_line("/proc/sys/kernel/hostname"),
+            kernel: read_line("/proc/sys/kernel/osrelease"),
             page_size,
             meminfo: meminfo::parse(&meminfo_text).context("parsing /proc/meminfo")?,
             arc: Source::read(zfs::ARCSTATS, zfs::parse),
             slabs: Source::read(slab::SLABINFO, |text| {
-                slab::parse(text, page_size, slab::reclaimable_from_sysfs)
+                slab::parse(text, page_size, slab::reclaimability_from_sysfs)
             }),
             processes: procs::scan(),
             buddy: Source::read(buddy::BUDDYINFO, buddy::parse),

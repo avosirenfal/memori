@@ -47,14 +47,6 @@ impl BlockSize {
             _ => Self::Small,
         }
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Large => "in blocks of 2 MiB or more",
-            Self::Medium => "in blocks of 64 KiB up to 2 MiB",
-            Self::Small => "in blocks under 64 KiB",
-        }
-    }
 }
 
 /// Free memory across all zones, split by the size of the contiguous block it sits in.

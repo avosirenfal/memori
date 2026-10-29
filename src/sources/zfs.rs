@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use anyhow::ensure;
 
-use crate::procfs::byte_fields;
+use super::byte_fields;
 use crate::units::Bytes;
 
 pub const ARCSTATS: &str = "/proc/spl/kstat/zfs/arcstats";

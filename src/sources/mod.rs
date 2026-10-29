@@ -1,6 +1,75 @@
-//! Small helpers shared by the parsers of kernel text files.
+//! Readers and parsers for the kernel's memory files. Each parser is a pure function of
+//! the file's text; reading the file is kept separate so parsers can be tested.
+
+pub mod buddy;
+pub mod gpu;
+pub mod meminfo;
+pub mod procs;
+pub mod slab;
+pub mod swap;
+pub mod tmpfs;
+pub mod zfs;
 
 use std::collections::HashMap;
+use std::{fs, io, path::Path};
+
+/// What happened when we tried to read one optional data source.
+#[derive(Debug, Clone)]
+pub enum Source<T> {
+    Available(T),
+    /// This system doesn't have the feature (for example, ZFS isn't loaded).
+    Absent,
+    /// The kernel only shows this to root.
+    NeedsRoot,
+    /// The file exists but couldn't be read or understood.
+    Broken(String),
+}
+
+impl<T> Source<T> {
+    pub fn read(path: impl AsRef<Path>, parse: impl FnOnce(&str) -> anyhow::Result<T>) -> Self {
+        let path = path.as_ref();
+        match fs::read_to_string(path) {
+            Ok(text) => parse(&text).map_or_else(
+                |error| Self::Broken(format!("{}: {error:#}", path.display())),
+                Self::Available,
+            ),
+            Err(error) => match error.kind() {
+                io::ErrorKind::NotFound => Self::Absent,
+                io::ErrorKind::PermissionDenied => Self::NeedsRoot,
+                _ => Self::Broken(format!("{}: {error}", path.display())),
+            },
+        }
+    }
+
+    pub fn available(&self) -> Option<&T> {
+        match self {
+            Self::Available(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn as_ref(&self) -> Source<&T> {
+        self.map_ref(|value| value)
+    }
+
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Source<U> {
+        match self {
+            Self::Available(value) => Source::Available(f(value)),
+            Self::Absent => Source::Absent,
+            Self::NeedsRoot => Source::NeedsRoot,
+            Self::Broken(reason) => Source::Broken(reason),
+        }
+    }
+
+    fn map_ref<'a, U>(&'a self, f: impl FnOnce(&'a T) -> U) -> Source<U> {
+        match self {
+            Self::Available(value) => Source::Available(f(value)),
+            Self::Absent => Source::Absent,
+            Self::NeedsRoot => Source::NeedsRoot,
+            Self::Broken(reason) => Source::Broken(reason.clone()),
+        }
+    }
+}
 
 /// Parses lines like `MemTotal:  16477352 kB` or `HugePages_Total:  0`, the format of
 /// /proc/meminfo and /proc/<pid>/smaps_rollup. Values with a `kB` suffix become bytes;
@@ -15,13 +84,6 @@ pub fn parse_colon_kv(text: &str) -> HashMap<&str, u64> {
             Some((key.trim(), value * scale))
         })
         .collect()
-}
-
-/// Returns `items` sorted by `key` (stable).
-pub fn sorted_by_key<T, K: Ord>(items: Vec<T>, key: impl FnMut(&T) -> K) -> Vec<T> {
-    let mut items = items;
-    items.sort_by_key(key);
-    items
 }
 
 /// Undoes the octal escaping /proc/mounts and /proc/swaps apply to paths (`\040` is a space).

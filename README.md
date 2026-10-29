@@ -33,7 +33,8 @@ lands in exactly one category. Each category also says how easily its memory com
            All 4 processes         15.0 GiB  768 MiB
 ```
 
-(This sample comes from the synthetic test system in `src/report.rs`.)
+(This sample is rendered from the synthetic test system in `src/render/tests.rs`; a test
+keeps it current.)
 
 The overview puts every byte of RAM into one of four groups: memory in use, the ZFS
 ARC (which shrinks when RAM runs low), cache the kernel can drop, and free memory.
@@ -57,29 +58,37 @@ sudo memori
 memori works without root, but the kernel only lets root read `/proc/slabinfo` and
 other users' processes. Without root, the report says what it had to leave out.
 
-With no section flags, memori prints the overview and the programs table. Section flags
-print only the sections named; `-d` prints all of them.
+`memori --help` (this block is checked against the real output by a test):
 
-| Option                | Meaning                                                  |
-| --------------------- | -------------------------------------------------------- |
-| `-o, --overview`      | overview section                                         |
-| `-p, --programs`      | programs section                                         |
-| `-z, --zfs`           | ZFS ARC section                                          |
-| `-k, --kernel`        | kernel memory and slab caches (`slabtop -s c`)           |
-| `-c, --cache`         | file cache and shared memory                             |
-| `-s, --swap`          | swap and zram                                            |
-| `-f, --fragmentation` | free memory fragmentation (`/proc/buddyinfo`)            |
-| `-u, --unexplained`   | memory no kernel counter accounts for                    |
-| `-d, --detailed`      | every section, and the overview's totals broken down     |
-| `-a, --all`           | list all programs                                        |
-| `--top N`             | how many programs to list (default 15)                   |
-| `--slabs N`           | how many slab caches to list (default 12)                |
-| `-P, --per-process`   | list individual processes instead of grouping them       |
-| `-h, --headers`       | print title, headings, column headers, totals (default)  |
-| `-H, --no-headers`    | leave those out                                          |
-| `-n, --no-help`       | leave out explanations next to rows                      |
-| `--color WHEN`        | `auto` (default), `always` or `never`; honors NO_COLOR   |
-| `--help`              | print help                                               |
+```text
+Explains where your RAM is going
+
+Usage: memori [OPTIONS]
+
+Options:
+  -o, --overview       Where RAM is, and how much is available
+  -p, --programs       Programs and their memory
+  -z, --zfs            ZFS's disk cache
+  -k, --kernel         Kernel memory and slab caches
+  -c, --cache          File cache and shared memory
+  -s, --swap           Swap devices and zram
+  -f, --fragmentation  Free memory fragmentation
+  -u, --unexplained    Memory no kernel counter accounts for
+  -d, --detailed       Print every section, and break the overview down by category
+  -a, --all            List all programs
+      --top <N>        How many programs to list [default: 15]
+      --slabs <N>      How many slab caches to list [default: 12]
+  -P, --per-process    List processes one by one instead of grouping them by program
+  -h, --headers        Print titles, column headers and totals (the default)
+  -H, --no-headers     Leave out titles, column headers and totals
+  -n, --no-help        Leave out explanations and warnings
+      --color <COLOR>  When to use colors [default: auto] [possible values: auto, always, never]
+      --help           Print help
+  -V, --version        Print version
+
+With no section flags, prints the overview and the programs.
+Run with sudo to include other users' processes and kernel slab caches.
+```
 
 For example, `memori -apH` prints every program and nothing else, one per line.
 Warnings (such as "run with sudo") appear only when both headers and help are on.

@@ -1,11 +1,12 @@
 //! Per-process memory from /proc/<pid>/smaps_rollup, the same data `smem` reports.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::Path;
 
-use crate::procfs::{byte_fields, parse_colon_kv, sorted_by_key};
+use super::{byte_fields, parse_colon_kv};
+use crate::collections::{NonEmpty, sorted_by};
 
 byte_fields! {
     pub struct Rollup {
@@ -17,15 +18,16 @@ byte_fields! {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Process {
     pub pid: u32,
-    pub ppid: u32,
+    pub parent: u32,
     /// When the process started, in clock ticks since boot.
     pub started: u64,
     /// The executable's file name, so that all of a program's processes group together.
     pub name: String,
-    pub cmdline: String,
+    /// The command line; kernel-launched helpers may have none.
+    pub command: Option<String>,
     pub mem: Rollup,
 }
 
@@ -36,14 +38,31 @@ pub struct ProcessScan {
     pub unreadable: usize,
 }
 
-/// A program's processes, summed.
+/// All of one program's processes.
 #[derive(Debug, Clone)]
 pub struct ProgramGroup<'a> {
-    pub name: &'a str,
-    /// The oldest process whose parent isn't part of the group: the one that started the rest.
-    pub root: &'a Process,
-    pub processes: usize,
-    pub mem: Rollup,
+    members: NonEmpty<&'a Process>,
+}
+
+impl<'a> ProgramGroup<'a> {
+    pub fn name(&self) -> &'a str {
+        &self.members.first().name
+    }
+
+    /// The oldest process whose parent isn't in the group: the one that started the rest.
+    pub fn root(&self) -> &'a Process {
+        let pids: HashSet<u32> = self.members.iter().map(|p| p.pid).collect();
+        let roots = self.members.iter().filter(|p| !pids.contains(&p.parent));
+        roots.min_by_key(|p| (p.started, p.pid)).copied().unwrap_or(self.members.first())
+    }
+
+    pub fn processes(&self) -> usize {
+        self.members.len()
+    }
+
+    pub fn mem(&self) -> Rollup {
+        self.members.iter().map(|p| p.mem).sum()
+    }
 }
 
 enum Probe {
@@ -74,44 +93,54 @@ pub fn scan() -> ProcessScan {
 
 fn probe(pid: u32) -> Probe {
     let dir = Path::new("/proc").join(pid.to_string());
-    match fs::read_to_string(dir.join("smaps_rollup")) {
+    let read = |file: &str| fs::read_to_string(dir.join(file));
+    match read("smaps_rollup") {
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Probe::Unreadable,
         Err(_) => Probe::Skipped,
-        Ok(text) if text.is_empty() => Probe::Skipped,
-        Ok(text) => {
-            let (ppid, started) = fs::read_to_string(dir.join("stat"))
-                .ok()
-                .and_then(|stat| parse_stat(&stat))
-                .unwrap_or((0, 0));
-            Probe::Readable(Process {
-                pid,
-                ppid,
-                started,
-                name: program_name(&dir),
-                cmdline: fs::read(dir.join("cmdline"))
-                    .map(|raw| String::from_utf8_lossy(&raw).replace('\0', " ").trim().to_owned())
-                    .unwrap_or_default(),
-                mem: Rollup::from_kv(&parse_colon_kv(&text)),
+        Ok(rollup) if rollup.is_empty() => Probe::Skipped,
+        Ok(rollup) => {
+            let stat = read("stat").ok().and_then(|stat| parse_stat(&stat));
+            let name = program_name(&dir);
+            stat.zip(name).map_or(Probe::Skipped, |(Stat { parent, started }, name)| {
+                Probe::Readable(Process {
+                    pid,
+                    parent,
+                    started,
+                    name,
+                    command: fs::read(dir.join("cmdline")).ok().and_then(|raw| parse_cmdline(&raw)),
+                    mem: Rollup::from_kv(&parse_colon_kv(&rollup)),
+                })
             })
         }
     }
 }
 
-/// Parent pid and start time from /proc/<pid>/stat. The command name in parentheses may
-/// contain spaces, so fields are counted from its closing parenthesis (field 3 onward).
-fn parse_stat(stat: &str) -> Option<(u32, u64)> {
+#[derive(Debug, PartialEq, Eq)]
+struct Stat {
+    parent: u32,
+    started: u64,
+}
+
+/// /proc/<pid>/stat. The command name in parentheses may contain spaces, so fields are
+/// counted from its closing parenthesis (field 3 onward).
+fn parse_stat(stat: &str) -> Option<Stat> {
     let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
-    Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
+    Some(Stat { parent: fields.get(1)?.parse().ok()?, started: fields.get(19)?.parse().ok()? })
+}
+
+/// /proc/<pid>/cmdline separates arguments with NUL bytes.
+fn parse_cmdline(raw: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(raw).replace('\0', " ").trim().to_owned();
+    (!text.is_empty()).then_some(text)
 }
 
 /// The executable's file name, falling back to the kernel's 15-character `comm`.
-fn program_name(dir: &Path) -> String {
+fn program_name(dir: &Path) -> Option<String> {
     fs::read_link(dir.join("exe"))
         .ok()
         .and_then(|exe| Some(exe.file_name()?.to_string_lossy().into_owned()))
         .map(|name| unwrap_nix_name(name.trim_end_matches(" (deleted)")).to_owned())
         .or_else(|| Some(fs::read_to_string(dir.join("comm")).ok()?.trim().to_owned()))
-        .unwrap_or_else(|| "?".to_owned())
 }
 
 /// Nix wraps programs in a script `foo` that runs the real binary, `.foo-wrapped`.
@@ -119,34 +148,14 @@ fn unwrap_nix_name(name: &str) -> &str {
     name.strip_prefix('.').and_then(|bare| bare.strip_suffix("-wrapped")).unwrap_or(name)
 }
 
-/// Groups processes by program name, largest proportional share first.
+/// Groups processes by program name.
 pub fn by_program(processes: &[Process]) -> Vec<ProgramGroup<'_>> {
-    let grouped =
-        processes.iter().fold(BTreeMap::<&str, Vec<&Process>>::new(), |mut groups, process| {
-            groups.entry(&process.name).or_default().push(process);
-            groups
-        });
-    let groups: Vec<ProgramGroup> = grouped
-        .into_iter()
-        .map(|(name, members)| ProgramGroup {
-            name,
-            root: root_of(&members),
-            processes: members.len(),
-            mem: members.iter().map(|p| p.mem).sum(),
-        })
-        .collect();
-    sorted_by_key(groups, |group| std::cmp::Reverse(group.mem.pss))
-}
-
-/// The oldest member whose parent is outside the group. `members` is never empty.
-fn root_of<'a>(members: &[&'a Process]) -> &'a Process {
-    let pids: HashSet<u32> = members.iter().map(|p| p.pid).collect();
-    members
-        .iter()
-        .copied()
-        .filter(|p| !pids.contains(&p.ppid))
-        .min_by_key(|p| (p.started, p.pid))
-        .unwrap_or(members[0])
+    let by_name = sorted_by(processes.iter().collect(), |a, b| a.name.cmp(&b.name));
+    by_name
+        .chunk_by(|a, b| a.name == b.name)
+        .filter_map(|members| NonEmpty::from_vec(members.to_vec()))
+        .map(|members| ProgramGroup { members })
+        .collect()
 }
 
 #[cfg(test)]
@@ -154,13 +163,13 @@ mod tests {
     use super::*;
     use crate::units::Bytes;
 
-    fn process(pid: u32, ppid: u32, name: &str, pss: u64) -> Process {
+    fn process(pid: u32, parent: u32, name: &str, pss: u64) -> Process {
         Process {
             pid,
-            ppid,
+            parent,
             started: u64::from(pid),
             name: name.to_owned(),
-            cmdline: String::new(),
+            command: None,
             mem: Rollup { pss: Bytes(pss), ..Rollup::default() },
         }
     }
@@ -169,17 +178,23 @@ mod tests {
     fn groups_by_program_under_the_root_process() {
         let processes = [process(5, 1, "a", 10), process(2, 1, "b", 50), process(9, 5, "a", 60)];
         let groups = by_program(&processes);
-        assert_eq!(groups[0].name, "a");
-        assert_eq!(groups[0].root.pid, 5);
-        assert_eq!(groups[0].processes, 2);
-        assert_eq!(groups[0].mem.pss, Bytes(70));
-        assert_eq!(groups[1].name, "b");
+        assert_eq!(groups[0].name(), "a");
+        assert_eq!(groups[0].root().pid, 5);
+        assert_eq!(groups[0].processes(), 2);
+        assert_eq!(groups[0].mem().pss, Bytes(70));
+        assert_eq!(groups[1].name(), "b");
     }
 
     #[test]
     fn reads_stat_with_spaces_in_the_name() {
         let stat = "42 (Web Content) S 7 42 42 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 1234 0";
-        assert_eq!(parse_stat(stat), Some((7, 1234)));
+        assert_eq!(parse_stat(stat), Some(Stat { parent: 7, started: 1234 }));
+    }
+
+    #[test]
+    fn reads_cmdline() {
+        assert_eq!(parse_cmdline(b"ls\0-l\0"), Some("ls -l".to_owned()));
+        assert_eq!(parse_cmdline(b""), None);
     }
 
     #[test]

@@ -1,9 +1,10 @@
 //! tmpfs mounts: files that live only in RAM (counted as Shmem).
 
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
 use std::fs;
 
-use crate::procfs::{sorted_by_key, unescape_octal};
+use super::unescape_octal;
+use crate::collections::sorted_by_key;
 use crate::units::Bytes;
 
 #[derive(Debug, Clone)]
@@ -16,7 +17,7 @@ pub struct TmpfsMount {
 /// (bind mounts) is listed once.
 pub fn read() -> Vec<TmpfsMount> {
     let mounts = fs::read_to_string("/proc/self/mounts").unwrap_or_default();
-    let by_device = tmpfs_paths(&mounts)
+    let measured: Vec<(u64, TmpfsMount)> = tmpfs_paths(&mounts)
         .into_iter()
         .filter_map(|path| {
             let device = rustix::fs::stat(path.as_str()).ok()?.st_dev;
@@ -24,11 +25,13 @@ pub fn read() -> Vec<TmpfsMount> {
             let used = Bytes(usage.f_blocks.saturating_sub(usage.f_bfree) * usage.f_frsize);
             Some((device, TmpfsMount { path, used }))
         })
-        .fold(BTreeMap::new(), |mut unique, (device, mount)| {
-            unique.entry(device).or_insert(mount);
-            unique
-        });
-    sorted_by_key(by_device.into_values().collect(), |mount| std::cmp::Reverse(mount.used))
+        .collect();
+    // Sorting by device is stable, so each device keeps the mount point listed first.
+    let by_device = sorted_by_key(measured, |(device, _)| *device);
+    let unique = by_device
+        .chunk_by(|(a, _), (b, _)| a == b)
+        .filter_map(|same| same.first().map(|(_, mount)| mount.clone()));
+    sorted_by_key(unique.collect(), |mount| Reverse(mount.used))
 }
 
 /// Mount points of tmpfs filesystems in /proc/mounts (`device mountpoint fstype ...`).
